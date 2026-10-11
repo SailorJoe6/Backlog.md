@@ -60,7 +60,8 @@ const HARD_LINK_UNAVAILABLE = new Set(["EXDEV", "EPERM", "ENOTSUP", "EOPNOTSUPP"
 
 /**
  * Move one task file to another folder without ever replacing a file that is already there. Every
- * task file move goes through this function: archiving, and the `doctor` move of a leftover folder.
+ * task file move goes through this function: archiving, restoring, and the `doctor` move of a
+ * leftover folder.
  * It fails with EEXIST when the target name is taken, and then nothing has changed.
  *
  * Demotion is not a move: it rewrites the task into a new draft file.
