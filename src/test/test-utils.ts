@@ -219,7 +219,7 @@ export async function runCliInPseudoTerminal(
 	const timeout = setTimeout(() => {
 		timedOut = true;
 		child.kill();
-	}, 5_000);
+	}, getPlatformTimeout());
 	const [exitCode, stdout, stderr] = await Promise.all([
 		child.exited,
 		new Response(child.stdout).text(),
