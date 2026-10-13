@@ -132,11 +132,12 @@ describe("local task command performance boundaries", () => {
 		}
 	});
 
-	it("archives, completes, and demotes working-copy tasks without loading branches", async () => {
+	it("archives, completes, restores, and demotes working-copy tasks without loading branches", async () => {
 		const tripwires = installCrossBranchTripwires(core);
 		try {
 			expect((await core.archiveTask("TASK-1", false, { includeCrossBranch: false })).success).toBe(true);
 			expect(await core.completeTask("TASK-1.1", false, { includeCrossBranch: false })).toBe(true);
+			expect(await core.restoreTask("TASK-1.1", false)).toBe(true);
 			expect((await core.demoteTask("TASK-2", false, { includeCrossBranch: false })).success).toBe(true);
 			tripwires.expectUntouched();
 		} finally {

@@ -104,6 +104,15 @@ const idCommandCases: IdCommandCase[] = [
 		expected: "Completed task BACK-1.",
 	},
 	{
+		name: "task restore",
+		args: (id) => ["task", "restore", id],
+		setup: async (core) => {
+			await createTask(core, "BACK-1", "Target task", { status: "Done" });
+			expect(await core.completeTask("BACK-1", false, { includeCrossBranch: false })).toBe(true);
+		},
+		expected: "Restored task BACK-1 to active storage without changing its status.",
+	},
+	{
 		name: "task demote",
 		args: (id) => ["task", "demote", id],
 		setup: async (core) => createTask(core, "BACK-1", "Target task"),

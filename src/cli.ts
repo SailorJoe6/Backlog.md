@@ -3890,6 +3890,54 @@ addHelpSchema(taskCmd.command("archive <taskId>"), {
 		}
 	});
 
+addHelpSchema(taskCmd.command("restore <taskId>"), {
+	required: [
+		{
+			name: "taskId",
+			type: "Task ID",
+			description: "One local completed task to move back to active task storage",
+		},
+	],
+	optional: [],
+	writes:
+		"Moves the exact completed task file back to active task storage without changing its ID, content, parent, or status. This does not reopen the task; edit it explicitly, validate, then use task complete to return it to completed storage.",
+	output: "Restore confirmation and active task file path",
+	examples: ["backlog task restore {{TASK_ID:1}}"],
+})
+	.description("restore a completed task to active storage without reopening it")
+	.addHelpText(
+		"after",
+		'\nThe restored task keeps its terminal status. Make intended changes with "backlog task edit", validate them, then run "backlog task complete" to return the record to completed storage.\n',
+	)
+	.action(async (taskId: string) => {
+		const cwd = await requireProjectRoot();
+		const core = new Core(cwd);
+		const task = await core.loadTaskById(taskId, { includeCrossBranch: false });
+
+		if (!task) {
+			console.error(`Completed task ${taskId} not found. ${LOCAL_TASK_LOOKUP_HINT}`);
+			process.exitCode = 1;
+			return;
+		}
+
+		if (!isLocalEditableTask(task) || task.source !== "completed" || !task.filePath) {
+			console.error(`Task ${task.id} is not a local completed record.`);
+			process.exitCode = 1;
+			return;
+		}
+
+		const restoredFilePath = join(core.filesystem.tasksDir, basename(task.filePath));
+		const success = await core.restoreTask(task.id, undefined, { includeCrossBranch: false });
+		if (!success) {
+			console.error(`Failed to restore completed task: ${task.id}`);
+			process.exitCode = 1;
+			return;
+		}
+
+		console.log(`Restored task ${task.id} to active storage without changing its status.`);
+		console.log(`File: ${restoredFilePath}`);
+	});
+
 addHelpSchema(taskCmd.command("complete <taskId>"), {
 	required: [
 		{
@@ -3987,7 +4035,7 @@ taskCmd
 		const core = new Core(cwd);
 
 		// Don't handle commands that should be handled by specific command handlers
-		const reservedCommands = ["create", "list", "edit", "view", "archive", "complete", "demote"];
+		const reservedCommands = ["create", "list", "edit", "view", "archive", "complete", "restore", "demote"];
 		if (taskId && reservedCommands.includes(taskId)) {
 			console.error(`Unknown command: ${taskId}`);
 			taskCmd.help();

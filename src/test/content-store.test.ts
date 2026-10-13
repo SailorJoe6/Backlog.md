@@ -495,6 +495,29 @@ describe("ContentStore", () => {
 		expect(store.getTaskCorpusSnapshot().completedTasks.map((task) => task.status)).toEqual(["Done"]);
 	});
 
+	it("publishes a restored completed task only in the active corpus", async () => {
+		const activePath = await filesystem.saveTask(sampleTask);
+		await store.ensureInitialized();
+		const current = store.getTasks()[0];
+		if (!current) throw new Error("Expected initialized task");
+		const completed = {
+			...current,
+			status: "Done",
+			filePath: join(filesystem.completedDir, basename(activePath)),
+			source: "completed" as const,
+		};
+		store.transitionTask(current.id, completed);
+		expect(store.getTasks()).toEqual([]);
+		expect(store.getTaskCorpusSnapshot().completedTasks).toHaveLength(1);
+
+		store.restoreCompletedTask({ ...completed, filePath: activePath, source: "local" });
+
+		expect(store.getTasks().map((task) => task.id)).toEqual([current.id]);
+		expect(store.getTaskCorpusSnapshot().activeTasks).toHaveLength(1);
+		expect(store.getTaskCorpusSnapshot().completedTasks).toEqual([]);
+		expect(store.resolveTaskForMutation(current.id).status).toBe("found");
+	});
+
 	it("preserves duplicate working-copy identities across a local corpus refresh", async () => {
 		store.dispose();
 		await Promise.all([

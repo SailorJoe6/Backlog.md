@@ -463,6 +463,24 @@ export class ContentStore {
 		this.publishTaskChange();
 	}
 
+	/** Republish one exact completed record after it moves back into the active working corpus. */
+	restoreCompletedTask(task: Task): void {
+		if (!this.canPublishContent()) return;
+		const normalizedId = normalizeTaskId(task.id);
+		this.nextContentItemGeneration("tasks", normalizedId);
+		this.nextContentItemVersion("tasks", normalizedId, this.currentRoot());
+		this.activeTasks = this.activeTasks.filter((candidate) => !taskIdsEqual(candidate.id, task.id));
+		this.completedTasks = this.completedTasks.filter((candidate) => !taskIdsEqual(candidate.id, task.id));
+		this.activeTasks.push({ ...task, source: "local" });
+		if (this.taskIdentityIndex) {
+			this.taskIdentityIndex = this.taskIdentityIndex.withWorkingCopyCorpus(this.activeTasks, this.completedTasks);
+			this.replaceVisibleTasks(this.taskIdentityIndex.getTasks(false));
+		} else {
+			this.replaceVisibleTasks(this.activeTasks);
+		}
+		this.publishTaskChange();
+	}
+
 	/**
 	 * Republish one record that stays in the completed corpus, keyed by its file path.
 	 *

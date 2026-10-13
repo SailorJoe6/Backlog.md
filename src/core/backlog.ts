@@ -1,4 +1,4 @@
-import { rename as moveFile, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { link, rename as moveFile, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { DEFAULT_DIRECTORIES, DEFAULT_STATUSES, FALLBACK_STATUS } from "../constants/index.ts";
 import {
@@ -242,6 +242,41 @@ function markRecordAlreadyMoved(
 		(failure as Error & Record<string, unknown>).demotionFailureCause = demotionFailureCause;
 	}
 	return failure;
+}
+
+/**
+ * Move one file without ever replacing a destination that appeared concurrently.
+ *
+ * `rename` overwrites an existing file on POSIX. A hard-link followed by unlink keeps the
+ * destination creation atomic and preserves the source bytes. If removing the source fails, the
+ * new link is removed so callers either observe the original location or an explicitly marked
+ * partial failure.
+ */
+async function moveFileWithoutReplacement(fromPath: string, toPath: string): Promise<void> {
+	try {
+		await link(fromPath, toPath);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+			const collision = new Error(`Destination already exists: ${toPath}`);
+			collision.cause = error;
+			throw collision;
+		}
+		throw error;
+	}
+
+	try {
+		await unlink(fromPath);
+	} catch (error) {
+		try {
+			await unlink(toPath);
+		} catch (rollbackError) {
+			const failure = error instanceof Error ? error : new Error(String(error));
+			(failure as Error & { restoreState?: string }).restoreState = "partial";
+			failure.cause = rollbackError;
+			throw failure;
+		}
+		throw error;
+	}
 }
 
 /**
@@ -3415,6 +3450,91 @@ export class Core {
 		}
 
 		return result;
+	}
+
+	/**
+	 * Move one exact working-copy record out of `backlog/completed` and back into active task
+	 * storage. This is a location-only transition: the file is never parsed and reserialized, so its
+	 * ID, hierarchy, content, and terminal status remain byte-for-byte unchanged.
+	 */
+	async restoreTask(taskId: string, autoCommit?: boolean, options: TaskReadOptions = {}): Promise<boolean> {
+		// Restore is always a working-copy mutation. A caller cannot make it enumerate or select a
+		// branch-only record by omitting the local-read option.
+		const localOptions = { ...options, includeCrossBranch: false };
+		// Resolve configuration before moving the record. Invalid config must leave the completed
+		// corpus untouched rather than failing after the move.
+		const autoCommitEnabled = await this.shouldAutoCommit(autoCommit);
+		const task = await this.loadTaskById(taskId, localOptions);
+		if (task?.source !== "completed" || !task.filePath) return false;
+		const lockedFilePath = task.filePath;
+
+		return await this.fs.withTaskLock(task, async () => {
+			// Re-read under the record lock so a concurrent lifecycle change or identity collision
+			// cannot be overwritten by the move.
+			const current = await this.loadTaskById(taskId, localOptions);
+			if (current?.source !== "completed" || current.filePath !== lockedFilePath) return false;
+
+			const fromPath = lockedFilePath;
+			const toPath = join(this.fs.tasksDir, basename(fromPath));
+			const sourceBytes = await readFile(fromPath);
+			await moveFileWithoutReplacement(fromPath, toPath);
+
+			if (autoCommitEnabled) {
+				const commitPaths = [fromPath, toPath];
+				let stagedMove: Awaited<ReturnType<GitOperations["stageFileMoveAtomically"]>> | undefined;
+				try {
+					stagedMove = await this.git.stageFileMoveAtomically(fromPath, toPath);
+					if (stagedMove.repository) {
+						await this.git.commitFiles(`backlog: Restore task ${current.id}`, commitPaths, stagedMove.repoRoot);
+					}
+				} catch (error) {
+					let indexRollbackError: Error | undefined;
+					if (stagedMove?.repository) {
+						try {
+							const restoredFrom = await this.git.restoreIndexEntriesIfMatches(
+								fromPath,
+								stagedMove.stagedFrom,
+								stagedMove.previousFrom,
+							);
+							const restoredTo = await this.git.restoreIndexEntriesIfMatches(
+								toPath,
+								stagedMove.stagedTo,
+								stagedMove.previousTo,
+							);
+							if (!restoredFrom || !restoredTo) {
+								indexRollbackError = new Error("The Git index changed before restore rollback completed.");
+							}
+						} catch (indexError) {
+							indexRollbackError = indexError instanceof Error ? indexError : new Error(String(indexError));
+						}
+					}
+
+					try {
+						const destinationBytes = await readFile(toPath);
+						if (!sourceBytes.equals(destinationBytes) || (await Bun.file(fromPath).exists())) {
+							throw new Error("Restored task changed before rollback could take ownership of it.");
+						}
+						await moveFileWithoutReplacement(toPath, fromPath);
+					} catch (rollbackError) {
+						const failure = error instanceof Error ? error : new Error(String(error));
+						(failure as Error & { restoreState?: string }).restoreState = "partial";
+						failure.cause = rollbackError;
+						throw failure;
+					}
+					if (indexRollbackError) {
+						const failure = error instanceof Error ? error : new Error(String(error));
+						(failure as Error & { restoreState?: string }).restoreState = "partial";
+						failure.cause = indexRollbackError;
+						throw failure;
+					}
+					throw error;
+				}
+			}
+
+			const restoredTask: Task = { ...current, filePath: toPath, source: "local" };
+			this.contentStore?.restoreCompletedTask(restoredTask);
+			return true;
+		});
 	}
 
 	async completeTask(taskId: string, autoCommit?: boolean, options: TaskReadOptions = {}): Promise<boolean> {

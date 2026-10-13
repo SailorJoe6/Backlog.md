@@ -25,6 +25,15 @@ export interface GitIndexEntry {
 	stage: number;
 }
 
+export interface AtomicStagedFileMove {
+	repository: boolean;
+	repoRoot: string | null;
+	previousFrom: GitIndexEntry[];
+	previousTo: GitIndexEntry[];
+	stagedFrom: GitIndexEntry[];
+	stagedTo: GitIndexEntry[];
+}
+
 function indexEntriesEqual(left: readonly GitIndexEntry[], right: readonly GitIndexEntry[]): boolean {
 	return (
 		left.length === right.length &&
@@ -733,6 +742,94 @@ export class GitOperations {
 		// Always stage the new file location
 		await this.execGit(["add", relativeTo ?? toPath], { cwd: repoRoot });
 		return repoRoot === this.projectRoot ? null : repoRoot;
+	}
+
+	/**
+	 * Stage a file move without exposing a half-staged delete/add pair. Git prepares both paths in a
+	 * temporary index, then one `update-index --index-info` process publishes the pair to the real
+	 * index. Any preparation failure therefore leaves the operator's index untouched.
+	 */
+	async stageFileMoveAtomically(fromPath: string, toPath: string): Promise<AtomicStagedFileMove> {
+		const toContext = await this.getPathContext(toPath);
+		const repoRoot = toContext?.repoRoot ?? this.projectRoot;
+		if (!(await this.isRepository(repoRoot))) {
+			return {
+				repository: false,
+				repoRoot: null,
+				previousFrom: [],
+				previousTo: [],
+				stagedFrom: [],
+				stagedTo: [],
+			};
+		}
+
+		const relativeFrom = (await this.getRelativePathForRepo(fromPath, repoRoot)) ?? fromPath;
+		const relativeTo = toContext?.relativePath ?? (await this.getRelativePathForRepo(toPath, repoRoot)) ?? toPath;
+		const previousFrom = await this.getIndexEntries(fromPath);
+		const previousTo = await this.getIndexEntries(toPath);
+		const temporaryDirectory = await mkdtemp(join(tmpdir(), "backlog-git-stage-move-"));
+		const temporaryIndexEnv = { GIT_INDEX_FILE: join(temporaryDirectory, "index") };
+
+		try {
+			const baseHead = await this.resolveHead(repoRoot);
+			await this.populateTemporaryIndex(
+				repoRoot,
+				temporaryIndexEnv,
+				baseHead,
+				new Map([
+					[relativeFrom, previousFrom],
+					[relativeTo, previousTo],
+				]),
+			);
+			try {
+				await this.execGit(["add", "--all", relativeFrom], { cwd: repoRoot, env: temporaryIndexEnv });
+			} catch {
+				// An untracked source is already absent and has no deletion to stage.
+			}
+			await this.execGit(["add", relativeTo], { cwd: repoRoot, env: temporaryIndexEnv });
+
+			const staged = await this.readSelectedIndexEntries([relativeFrom, relativeTo], repoRoot, temporaryIndexEnv);
+			const stagedFrom = staged.get(relativeFrom) ?? [];
+			const stagedTo = staged.get(relativeTo) ?? [];
+			const currentFrom = await this.getIndexEntries(fromPath);
+			const currentTo = await this.getIndexEntries(toPath);
+			if (!indexEntriesEqual(currentFrom, previousFrom) || !indexEntriesEqual(currentTo, previousTo)) {
+				throw new Error("Git index changed while the task restore move was being prepared.");
+			}
+
+			const objectIdLength =
+				stagedTo[0]?.objectId.length ??
+				stagedFrom[0]?.objectId.length ??
+				previousTo[0]?.objectId.length ??
+				previousFrom[0]?.objectId.length ??
+				40;
+			const zeroObjectId = "0".repeat(objectIdLength);
+			const records: string[] = [];
+			for (const [relativePath, entries] of [
+				[relativeFrom, stagedFrom],
+				[relativeTo, stagedTo],
+			] as const) {
+				records.push(`0 ${zeroObjectId}\t${relativePath}\0`);
+				for (const entry of entries) {
+					records.push(`${entry.mode} ${entry.objectId} ${entry.stage}\t${relativePath}\0`);
+				}
+			}
+			await this.execGit(["update-index", "-z", "--index-info"], {
+				cwd: repoRoot,
+				input: records.join(""),
+			});
+
+			return {
+				repository: true,
+				repoRoot,
+				previousFrom,
+				previousTo,
+				stagedFrom,
+				stagedTo,
+			};
+		} finally {
+			await rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined);
+		}
 	}
 
 	async listRemoteBranches(remote = "origin"): Promise<string[]> {

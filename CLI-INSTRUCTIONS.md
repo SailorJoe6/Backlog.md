@@ -89,6 +89,15 @@ Humans and agents can run `backlog instructions` for workflow guides and `backlo
 | Set due date | `backlog task edit 7 --due-date 2026-08-10` |
 | Clear due date | `backlog task edit 7 --clear-due-date` |
 | Archive     | `backlog task archive 7`                             |
+| Complete cleanup | `backlog task complete 7`                        |
+| Restore completed | `backlog task restore 7`                        |
+
+`task restore` is the location-only inverse of completion cleanup. It moves the
+exact record from `backlog/completed/` back to `backlog/tasks/` without changing
+its ID, parent, content, filename, or status. A restored `Done` task remains
+`Done`; the command does not reopen it. Make intended changes with `task edit`,
+validate the result, and only then run `task complete` to return the record to
+completed storage.
 
 ### Paging long lists
 
