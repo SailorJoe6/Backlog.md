@@ -204,7 +204,13 @@ export function resolveTaskListSelection<T>(
  * keeps every claimant, so the shared record index still reports it ambiguous exactly as the CLI
  * does, instead of this merge quietly electing a winner.
  */
-export function mergeDependencyCorpusTasks(snapshot: Task[], liveTasks: Task[]): Task[] {
+export function mergeDependencyCorpusTasks(
+	snapshot: Task[],
+	liveTasks: Task[],
+	displayedTasksAreDrafts = false,
+): Task[] {
+	// Drafts are display records, never eligible dependency targets or reverse-edge declarers.
+	if (displayedTasksAreDrafts) return snapshot;
 	const groupById = (tasks: Task[]) => {
 		const groups = new Map<string, Task[]>();
 		for (const task of tasks) {
@@ -252,6 +258,7 @@ export async function viewTaskEnhanced(
 	task: Task,
 	options: {
 		tasks?: Task[];
+		drafts?: boolean;
 		core?: Core;
 		title?: string;
 		filterDescription?: string;
@@ -265,7 +272,7 @@ export async function viewTaskEnhanced(
 		labelFilter?: string[];
 		labelMatch?: LabelMatchMode;
 		readyFilter?: boolean;
-		/** Unfiltered corpus for dependency readiness; defaults to the tasks being displayed. */
+		/** Eligible unfiltered corpus; draft displays load actual tasks instead of resolving drafts. */
 		readinessTasks?: Task[];
 		limit?: number;
 		startWithDetailFocus?: boolean;
@@ -368,14 +375,18 @@ export async function viewTaskEnhanced(
 	// Dependency readiness must resolve against the whole corpus, not the filtered display list, so
 	// it uses the unfiltered snapshot when the caller narrowed what is shown. Both sides stay
 	// mutable because completing a task from this view moves it between them.
-	let readinessSnapshot = options.readinessTasks ? [...options.readinessTasks] : null;
+	let readinessSnapshot = options.readinessTasks
+		? [...options.readinessTasks]
+		: options.drafts
+			? await core.queryTasks({ includeCrossBranch: false })
+			: null;
 	const readinessCompletedTasks = [...completedTasks];
 	// The corpus that both readiness and the dependency graph resolve against, so the two never
 	// disagree about which records this view can see.
 	const resolveDependencyCorpus = (): TaskCorpus => {
 		let tasks = allTasks;
 		if (readinessSnapshot) {
-			tasks = mergeDependencyCorpusTasks(readinessSnapshot, allTasks);
+			tasks = mergeDependencyCorpusTasks(readinessSnapshot, allTasks, options.drafts);
 		}
 		return { tasks, completedTasks: readinessCompletedTasks, statuses };
 	};

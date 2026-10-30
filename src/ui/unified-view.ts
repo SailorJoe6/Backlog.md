@@ -22,6 +22,8 @@ export interface UnifiedViewOptions {
 	initialView: ViewType;
 	selectedTask?: Task;
 	tasks?: Task[];
+	/** Display drafts without admitting them into the dependency corpus. */
+	drafts?: boolean;
 	tasksLoader?: (
 		updateProgress: (message: string) => void,
 	) => Promise<{ tasks: Task[]; statuses: string[]; readinessTasks?: Task[] }>;
@@ -63,7 +65,7 @@ export interface UnifiedViewLoadResult {
 	statuses: string[];
 	/**
 	 * Unfiltered task corpus for dependency readiness. Only needed when `tasks` was narrowed by
-	 * loader-side filters; otherwise `tasks` is already the whole corpus.
+	 * loader-side filters or contains displayed drafts; otherwise `tasks` is already the whole corpus.
 	 */
 	readinessTasks?: Task[];
 }
@@ -224,13 +226,14 @@ export function mergeUnifiedViewFilters(
 
 export async function loadTasksForUnifiedView(
 	core: Core,
-	options: Pick<UnifiedViewOptions, "tasks" | "tasksLoader" | "loadingScreenFactory">,
+	options: Pick<UnifiedViewOptions, "tasks" | "drafts" | "tasksLoader" | "loadingScreenFactory">,
 ): Promise<UnifiedViewLoadResult> {
 	if (options.tasks && options.tasks.length > 0) {
 		const config = await core.filesystem.loadConfig();
 		return {
 			tasks: options.tasks,
 			statuses: config?.statuses || ["To Do", "In Progress", "Done"],
+			readinessTasks: options.drafts ? await core.queryTasks({ includeCrossBranch: false }) : undefined,
 		};
 	}
 
@@ -300,6 +303,7 @@ export async function runUnifiedView(options: UnifiedViewOptions): Promise<void>
 			readinessTasks: loadedReadinessTasks,
 		} = await loadTasksForUnifiedView(options.core, {
 			tasks: options.tasks,
+			drafts: options.drafts,
 			tasksLoader: options.tasksLoader,
 			loadingScreenFactory: options.loadingScreenFactory,
 		});
@@ -433,6 +437,7 @@ export async function runUnifiedView(options: UnifiedViewOptions): Promise<void>
 
 				viewTaskEnhanced(taskToView, {
 					tasks: availableTasks,
+					drafts: options.drafts,
 					core: options.core,
 					title: options.filter?.title,
 					filterDescription: options.filter?.filterDescription,

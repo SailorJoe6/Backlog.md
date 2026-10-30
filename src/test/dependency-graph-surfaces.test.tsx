@@ -109,3 +109,50 @@ describe("filtered TUI dependency corpus merge", () => {
 		expect(graph.nodes.find((node) => node.id === "BACK-1")?.state).toBe("ambiguous");
 	});
 });
+
+describe("draft display dependency corpus", () => {
+	it("never resolves or traverses displayed drafts, but resolves actual tasks and completed records in both directions", () => {
+		const root = makeTask("DRAFT-2", "Selected draft", ["DRAFT-1", "TASK-1", "TASK-3"], "Draft");
+		const otherDraft = makeTask("DRAFT-1", "Ineligible draft", ["TASK-4"], "Draft");
+		const active = makeTask("TASK-1", "Actual predecessor", [], "Done");
+		const dependent = makeTask("TASK-2", "Actual dependent", [root.id]);
+		const completed = makeTask("TASK-3", "Completed predecessor", [], "Done");
+		const unrelated = makeTask("TASK-4", "Behind draft");
+		const draftDependent = makeTask("DRAFT-3", "Ineligible dependent", [root.id], "Draft");
+		const eligible = [active, dependent, unrelated];
+		const drafts = [root, otherDraft, draftDependent];
+		const tasks = mergeDependencyCorpusTasks(eligible, drafts, true);
+		expect(tasks).toBe(eligible);
+		const detail = toTaskDetail(root, { tasks, completedTasks: [completed], statuses: STATUSES });
+		expect(detail.readiness.missingDependencies).toEqual(["DRAFT-1"]);
+		expect(detail.readiness.blockingDependencies).toEqual([]);
+		expect(detail.dependencyGraph.nodes.find((node) => node.id === "DRAFT-1")?.state).toBe("missing");
+		expect(detail.dependencyGraph.nodes.find((node) => node.id === "TASK-1")?.state).toBe("resolved");
+		expect(detail.dependencyGraph.nodes.find((node) => node.id === "TASK-3")?.completed).toBe(true);
+		expect(detail.dependencyGraph.nodes.find((node) => node.id === "TASK-2")?.dependentDepth).toBe(1);
+		expect(detail.dependencyGraph.nodes.some((node) => ["TASK-4", "DRAFT-3"].includes(node.id))).toBe(false);
+		const body = generateDetailContent(detail).bodyContent.join("\n");
+		expect(body).toContain("DRAFT-1 - unknown task ID");
+		expect(body).toContain("TASK-1 - Actual predecessor [completed]");
+		expect(body).toContain("TASK-2 - Actual dependent [To Do]");
+		expect(body).not.toContain("Ineligible dependent");
+	});
+
+	it("keeps actual-task ambiguity and cycles unchanged without admitting display drafts", () => {
+		const first = makeTask("TASK-1", "First", ["TASK-2"]);
+		const second = makeTask("TASK-2", "Second", ["TASK-1"]);
+		const draft = makeTask("DRAFT-1", "Display only", ["TASK-1"], "Draft");
+		const tasks = mergeDependencyCorpusTasks([first, second], [draft], true);
+		const detail = toTaskDetail(first, { tasks, completedTasks: [], statuses: STATUSES });
+		expect(detail.dependencyGraph.edges).toEqual([
+			{ from: "TASK-1", to: "TASK-2" },
+			{ from: "TASK-2", to: "TASK-1" },
+		]);
+		const ambiguous = toTaskDetail(draft, {
+			tasks: mergeDependencyCorpusTasks([first, { ...first, title: "Duplicate" }], [draft], true),
+			completedTasks: [],
+			statuses: STATUSES,
+		});
+		expect(ambiguous.dependencyGraph.nodes.find((node) => node.id === first.id)?.state).toBe("ambiguous");
+	});
+});

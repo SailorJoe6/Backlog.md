@@ -4153,6 +4153,7 @@ addListWindowOptions(draftListCommand)
 			initialView: "task-list",
 			selectedTask: sortedDrafts[0],
 			tasks: sortedDrafts,
+			drafts: true,
 			filter: {
 				filterDescription: "All Drafts",
 			},

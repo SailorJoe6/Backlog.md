@@ -68,6 +68,28 @@ describe("loadTasksForUnifiedView", () => {
 		expect(result.readinessTasks).toEqual([hiddenDependency, displayed]);
 	});
 
+	it("keeps supplied draft display records separate from actual local dependency tasks", async () => {
+		await core.filesystem.ensureBacklogStructure();
+		const task: Task = {
+			id: "TASK-1",
+			title: "Eligible",
+			status: "Done",
+			assignee: [],
+			createdDate: "2026-01-01",
+			labels: [],
+			dependencies: [],
+		};
+		await core.filesystem.saveTask(task);
+		await core.filesystem.saveDraft({ ...task, id: "DRAFT-1", title: "Draft", status: "Draft" });
+		const drafts = await core.filesystem.listDrafts();
+
+		const result = await loadTasksForUnifiedView(core, { tasks: drafts, drafts: true });
+
+		expect(result.tasks).toBe(drafts);
+		expect(result.readinessTasks?.map((candidate) => candidate.id)).toEqual(["TASK-1"]);
+		expect((await core.filesystem.listDrafts()).map((candidate) => candidate.id)).toEqual(["DRAFT-1"]);
+	});
+
 	it("leaves the readiness corpus unset when the loader did not narrow the task list", async () => {
 		const result = await loadTasksForUnifiedView(core, {
 			tasksLoader: async () => ({ tasks: [], statuses: ["To Do"] }),
