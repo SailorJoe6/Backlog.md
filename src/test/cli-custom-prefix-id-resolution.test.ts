@@ -443,29 +443,21 @@ describe("CLI task ID resolution with a custom ID prefix", () => {
 		expect(await Bun.file(join(draftsDir, "draft-2 - Two.md")).exists()).toBe(false);
 	});
 
-	it("fails closed when a bare dependency ID matches both a task and a draft", async () => {
+	it("ignores draft targets when resolving dependencies (revised historical draft-target policy)", async () => {
 		const core = await initCustomPrefixProject();
 		await createTask(core, "BACK-1", "Target task");
 		await createTask(core, "BACK-2", "Dependent task");
-		// Task and draft IDs come from separate counters, so a bare 1 names two different tasks.
 		await createDraft(core, "DRAFT-1", "Target draft");
 
-		const ambiguous = await $`bun ${CLI_PATH} task edit 2 --dep 1`.cwd(TEST_DIR).nothrow().quiet();
-		expect(ambiguous.exitCode).not.toBe(0);
-		const output = `${ambiguous.stdout.toString()}${ambiguous.stderr.toString()}`;
-		expect(output).toContain("Dependency ID 1 is ambiguous");
-		expect(output).toContain("back-1 - Target-task.md");
-		expect(output).toContain("draft-1 - Target-draft.md");
-		expect((await core.filesystem.loadTask("BACK-2"))?.dependencies ?? []).toEqual([]);
-
-		// A fully qualified ID still names exactly one of them, in either namespace.
-		const onTask = await $`bun ${CLI_PATH} task edit 2 --dep BACK-1`.cwd(TEST_DIR).nothrow().quiet();
+		// Bare numbers resolve only in the eligible task/completed corpus.
+		const onTask = await $`bun ${CLI_PATH} task edit 2 --dep 1`.cwd(TEST_DIR).nothrow().quiet();
 		expect(onTask.exitCode).toBe(0);
 		expect((await core.filesystem.loadTask("BACK-2"))?.dependencies).toEqual(["BACK-1"]);
 
 		const onDraft = await $`bun ${CLI_PATH} task edit 2 --dep DRAFT-1`.cwd(TEST_DIR).nothrow().quiet();
-		expect(onDraft.exitCode).toBe(0);
-		expect((await core.filesystem.loadTask("BACK-2"))?.dependencies).toEqual(["DRAFT-1"]);
+		expect(onDraft.exitCode).not.toBe(0);
+		expect(`${onDraft.stdout}${onDraft.stderr}`).toContain("The following dependencies do not exist: DRAFT-1");
+		expect((await core.filesystem.loadTask("BACK-2"))?.dependencies).toEqual(["BACK-1"]);
 	});
 
 	it("rejects a blank parent filter instead of listing every task", async () => {

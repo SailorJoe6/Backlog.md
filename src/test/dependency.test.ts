@@ -120,7 +120,7 @@ describe("Task Dependencies", () => {
 		expect(savedTask?.dependencies).toEqual(["TASK-1", "TASK-2"]);
 	});
 
-	test("should handle tasks with dependencies in drafts", async () => {
+	test("low-level task serialization preserves stored references without validating draft targets", async () => {
 		// Create a draft task
 		const draftTask: Task = {
 			id: "task-1",
@@ -328,20 +328,23 @@ describe("Task Dependencies", () => {
 		expect((await core.filesystem.loadTask(edited.id))?.dependencies).toEqual([predecessor.id]);
 	});
 
-	test("accepts an archived task as a dependency at create and edit time", async () => {
+	test("rejects archive-only dependencies at create and edit time (revised historical archive-target policy)", async () => {
 		const { task: predecessor } = await core.createTaskFromInput({ title: "Archived predecessor" });
 		// Keep an active task with a higher ID so the allocator does not reuse the archived ID.
 		const { task: edited } = await core.createTaskFromInput({ title: "Edited after archive" });
 		expect((await core.archiveTask(predecessor.id, false)).success).toBe(true);
 
-		const { task: created } = await core.createTaskFromInput({
-			title: "Created after archive",
-			dependencies: [predecessor.id],
-		});
-		expect(created.dependencies).toEqual([predecessor.id]);
+		await expect(
+			core.createTaskFromInput({
+				title: "Created after archive",
+				dependencies: [predecessor.id],
+			}),
+		).rejects.toThrow("The following dependencies do not exist");
 
-		await core.updateTaskFromInput(edited.id, { dependencies: [predecessor.id] }, false);
-		expect((await core.filesystem.loadTask(edited.id))?.dependencies).toEqual([predecessor.id]);
+		await expect(core.updateTaskFromInput(edited.id, { dependencies: [predecessor.id] }, false)).rejects.toThrow(
+			"The following dependencies do not exist",
+		);
+		expect((await core.filesystem.loadTask(edited.id))?.dependencies ?? []).toEqual([]);
 	});
 
 	test("re-editing the dependency list of a task whose predecessor completed keeps working", async () => {
@@ -359,12 +362,14 @@ describe("Task Dependencies", () => {
 		expect((await core.filesystem.loadTask(dependent.id))?.dependencies).toEqual([predecessor.id, other.id]);
 	});
 
-	test("still accepts drafts and rejects unknown dependency IDs", async () => {
+	test("rejects draft-only and unknown dependency IDs (revised historical draft-target policy)", async () => {
 		const { task: draft } = await core.createTaskFromInput({ title: "Draft target", status: "Draft" }, false);
 		const { task } = await core.createTaskFromInput({ title: "Dependent task" });
 
-		await core.updateTaskFromInput(task.id, { dependencies: [draft.id] }, false);
-		expect((await core.filesystem.loadTask(task.id))?.dependencies).toEqual([draft.id]);
+		await expect(core.updateTaskFromInput(task.id, { dependencies: [draft.id] }, false)).rejects.toThrow(
+			"The following dependencies do not exist",
+		);
+		expect((await core.filesystem.loadTask(task.id))?.dependencies ?? []).toEqual([]);
 
 		await expect(core.updateTaskFromInput(task.id, { dependencies: ["task-999"] }, false)).rejects.toThrow(
 			"The following dependencies do not exist: task-999",
@@ -610,13 +615,15 @@ describe("Self-referential and cyclic dependencies", () => {
 		expect(await core.filesystem.loadDraft("draft-2")).toBeNull();
 	});
 
-	test("a bare-number dependency resolves to the existing draft, not the allocated task ID", async () => {
+	test("a draft cannot mask an allocated task self-reference (revised historical draft-target policy)", async () => {
 		const { task: draft } = await core.createTaskFromInput({ title: "Existing draft", status: "Draft" }, false);
 
-		// With no tasks yet, creation allocates task-1; bare 1 must keep naming the record that
-		// already claims it instead of being rejected as a self-dependency on the allocated ID.
-		const { task } = await core.createTaskFromInput({ title: "Depends on the draft", dependencies: ["1"] }, false);
-		expect(task.dependencies).toEqual([draft.id]);
+		// The draft is ineligible; bare 1 names the new task itself, not a draft fallback.
+		await expect(core.createTaskFromInput({ title: "Depends on itself", dependencies: ["1"] }, false)).rejects.toThrow(
+			"cannot depend on itself",
+		);
+		expect(await core.filesystem.loadTask("task-1")).toBeNull();
+		expect(await core.filesystem.loadDraft(draft.id)).not.toBeNull();
 	});
 
 	test("rejects a promotion whose dangling reference equals the allocated task ID", async () => {

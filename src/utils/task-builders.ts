@@ -12,8 +12,8 @@ import { AmbiguousTaskIdError, canonicalTaskId, taskIdsEqual } from "./task-path
 /**
  * Reject a dependency input that names more than one entity in the corpus.
  *
- * Several canonical identities mean the input is underspecified, because bare numbers span the
- * separate task and draft counters. Several spellings of one identity (BACK-1 and BACK-01) are the
+ * Several canonical identities mean the input is underspecified, because bare numbers can match
+ * tasks with different prefixes. Several spellings of one identity (BACK-1 and BACK-01) are the
  * duplicate-ID defect `backlog doctor` repairs.
  */
 function resolveUniqueDependency(dependency: string, matches: Task[]): string | null {
@@ -38,10 +38,9 @@ function resolveUniqueDependency(dependency: string, matches: Task[]): string | 
 /**
  * Validate that all dependencies exist in the working copy.
  *
- * The corpus spans working-copy tasks, drafts, completed, and archived records: Done is the normal
- * end state of a predecessor, so a task whose target moved to completed/ or the archive must keep a
- * valid, editable dependency list. Only validation resolves these targets; readiness and graph
- * semantics are unchanged.
+ * Only working-copy tasks and completed records are eligible, matching readiness and graph
+ * reporting. Completion keeps a predecessor eligible; archive is deletion/history and never a
+ * fallback target, even when its ID has been reused. Drafts are not dependency targets.
  *
  * Inputs are matched by task identity, so bare numeric IDs resolve under any configured prefix, and
  * identity fails closed exactly as it does for the task a command targets. That takes two checks,
@@ -60,7 +59,7 @@ function resolveUniqueDependency(dependency: string, matches: Task[]): string | 
  * identity allocated moments ago, which no corpus record claims, so a dangling reference to
  * exactly that ID would become a self-dependency the moment the record is written under it.
  * Resolution runs first so an input that names an existing record keeps naming it - a bare number
- * resolves to the draft or task that already claims it, not to the identity being allocated.
+ * resolves to the eligible task that already claims it, not to the identity being allocated.
  *
  * Returns the matched canonical IDs, deduplicated, plus the inputs that matched nothing.
  */
@@ -75,7 +74,7 @@ export async function validateDependencies(
 		return { valid, invalid };
 	}
 	const corpus = await loadDependencyCorpus(core);
-	const known = [...corpus.tasks, ...corpus.drafts, ...corpus.completed, ...corpus.archived];
+	const known = [...corpus.tasks, ...corpus.completed];
 	for (const dependency of dependencies) {
 		const resolved = resolveUniqueDependency(
 			dependency,
@@ -94,8 +93,7 @@ export async function validateDependencies(
 			throw new Error(`Task ${target.id} cannot depend on itself ("${dependency.trim()}" names this task).`);
 		}
 		// Called for its ambiguity check: it raises AmbiguousTaskIdError when several working-copy
-		// files (active or completed) claim this ID. Drafts and archived tasks resolve to null here
-		// and rely on the corpus check above.
+		// files (active or completed) claim this ID.
 		await core.loadTaskById(resolved, { includeCrossBranch: false });
 		// Equivalent spellings of one task (1 and BACK-1) must not persist twice.
 		if (!valid.some((existing) => taskIdsEqual(existing, resolved))) {
@@ -136,24 +134,20 @@ export async function validateDependencies(
 /** The records dependency validation and `backlog doctor` resolve dependencies against. */
 interface DependencyCorpus {
 	tasks: Task[];
-	drafts: Task[];
 	completed: Task[];
-	archived: Task[];
 }
 
 async function loadDependencyCorpus(core: Core): Promise<DependencyCorpus> {
-	const [tasks, drafts, completed, archived] = await Promise.all([
+	const [tasks, completed] = await Promise.all([
 		core.queryTasks({ includeCrossBranch: false }),
-		core.filesystem.listDrafts(),
 		core.filesystem.listCompletedTasks(),
-		core.filesystem.listArchivedTasks(),
 	]);
-	return { tasks, drafts, completed, archived };
+	return { tasks, completed };
 }
 
 /** Arrange the corpus for the dependency graph, whose only split is completed versus not. */
 function dependencyGraphCorpus(corpus: DependencyCorpus): { tasks: Task[]; completedTasks: Task[] } {
-	return { tasks: [...corpus.tasks, ...corpus.drafts, ...corpus.archived], completedTasks: corpus.completed };
+	return { tasks: corpus.tasks, completedTasks: corpus.completed };
 }
 
 export interface DependencyDefects {
@@ -179,7 +173,7 @@ export async function findDependencyDefects(core: Core): Promise<DependencyDefec
 	const selfDependencies: DependencyDefects["selfDependencies"] = [];
 	const cycles: string[][] = [];
 	const seen = new Set<string>();
-	for (const task of [...corpus.tasks, ...corpus.drafts, ...corpus.completed]) {
+	for (const task of [...corpus.tasks, ...corpus.completed]) {
 		const dependencies = task.dependencies ?? [];
 		for (const dependency of dependencies) {
 			if (taskIdsEqual(dependency, task.id)) {

@@ -938,8 +938,8 @@ export class Core {
 	 * What this does not close: a task that starts referencing the ID after that final in-lock
 	 * scan cannot be locked, because it was not yet a dependent when the set was fixed, so it
 	 * keeps its reference. Locking cannot close that on its own without a corpus-wide write lock,
-	 * and vacating before the scan does not close it either: an archived ID still resolves as a
-	 * dependency target by design, so the write that adds it is still accepted after the move.
+	 * Dependency validation refuses archived targets after the move, but a writer that already
+	 * validated before the move can still finish after this scan.
 	 * The stale reference that results is not silent - it renders as an unknown task ID until the
 	 * allocator hands the number out again.
 	 */
